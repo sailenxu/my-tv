@@ -7,11 +7,9 @@ import android.util.Base64
 import android.util.Log
 import com.lizongying.mytv.Utils.getDateFormat
 import com.lizongying.mytv.api.ApiClient
-import com.lizongying.mytv.api.BtraceClient
 import com.lizongying.mytv.api.Info
 import com.lizongying.mytv.api.LiveInfo
 import com.lizongying.mytv.api.LiveInfoRequest
-import com.lizongying.mytv.api.ProtoClient
 import com.lizongying.mytv.api.YSP
 import com.lizongying.mytv.api.YSPApiService
 import com.lizongying.mytv.api.YSPBtraceService
@@ -26,14 +24,13 @@ import retrofit2.Response
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.reflect.KFunction0
 
 
 class Request {
     private var yspTokenService: YSPTokenService = ApiClient().yspTokenService
     private var yspApiService: YSPApiService = ApiClient().yspApiService
-    private var yspBtraceService: YSPBtraceService = BtraceClient().yspBtraceService
-    private var yspProtoService: YSPProtoService = ProtoClient().yspProtoService
+    private var yspBtraceService: YSPBtraceService = ApiClient().yspBtraceService
+    private var yspProtoService: YSPProtoService = ApiClient().yspProtoService
     private var ysp: YSP? = null
 
     // TODO onDestroy
@@ -63,7 +60,6 @@ class Request {
         "CGTN阿拉伯语频道" to "CGTN 阿拉伯语频道",
         "CGTN西班牙语频道" to "CGTN 西班牙语频道",
         "CGTN外语纪录频道" to "CGTN 纪录频道",
-
         "东方卫视" to "东方卫视",
         "湖南卫视" to "湖南卫视",
         "湖北卫视" to "湖北卫视",
@@ -87,34 +83,14 @@ class Request {
         "海南卫视" to "海南卫视",
     )
 
-    private var token: String? = null
-
     fun initYSP(context: Context) {
         ysp = YSP(context)
     }
 
-    fun fetchToken(fragmentReady: KFunction0<Unit>) {
-        yspTokenService.getInfo()
-            .enqueue(object : Callback<Info> {
-                override fun onResponse(call: Call<Info>, response: Response<Info>) {
-                    if (response.isSuccessful) {
-                        val info = response.body()
-                        token = info?.data?.token
-                        Log.i(TAG, "info success $token")
-                    } else {
-                        Log.e(TAG, "info status error")
-                    }
-                    fragmentReady()
-                }
-
-                override fun onFailure(call: Call<Info>, t: Throwable) {
-                    Log.e(TAG, "info request error $t")
-                    fragmentReady()
-                }
-            })
-    }
+    var call: Call<LiveInfo>? = null
 
     fun fetchVideo(tvModel: TVViewModel, cookie: String) {
+        call?.cancel()
         if (::myRunnable.isInitialized) {
             handler.removeCallbacks(myRunnable)
         }
@@ -124,97 +100,107 @@ class Request {
         tvModel.seq = 0
         val data = ysp?.switch(tvModel)
         val request = data?.let { LiveInfoRequest(it) }
+        call = request?.let { yspApiService.getLiveInfo("guid=${ysp?.getGuid()}; $cookie", it) }
 
-        request?.let { yspApiService.getLiveInfo(cookie, it) }
-            ?.enqueue(object : Callback<LiveInfo> {
-                override fun onResponse(call: Call<LiveInfo>, response: Response<LiveInfo>) {
-                    if (response.isSuccessful) {
-                        val liveInfo = response.body()
-                        if (liveInfo?.data?.playurl != null) {
-                            val chanll = liveInfo.data.chanll
-                            val decodedBytes = Base64.decode(
-                                chanll.substring(9, chanll.length - 3),
-                                Base64.DEFAULT
-                            )
-                            val decodedString = String(decodedBytes)
-                            val regex = Regex("""des_key = "([^"]+).+var des_iv = "([^"]+)""")
-                            val matchResult = regex.find(decodedString)
-                            if (matchResult != null) {
-                                val (key, iv) = matchResult.destructured
-                                val keyBytes = Base64.decode(key, Base64.DEFAULT)
-                                val ivBytes = Base64.decode(iv, Base64.DEFAULT)
-                                val url = liveInfo.data.playurl + "&revoi=" + encryptTripleDES(
-                                    keyBytes + byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0),
-                                    ivBytes
-                                ).uppercase()
-                                Log.i(TAG, "$title url $url")
-                                tvModel.addVideoUrl(url)
-                                tvModel.allReady()
-
-                                myRunnable = MyRunnable(tvModel)
-                                handler.post(myRunnable)
-                            } else {
-                                Log.e(TAG, "$title key error")
-                                tvModel.firstSource()
-                            }
+        call?.enqueue(object : Callback<LiveInfo> {
+            override fun onResponse(call: Call<LiveInfo>, response: Response<LiveInfo>) {
+                if (response.isSuccessful) {
+                    val liveInfo = response.body()
+                    if (liveInfo?.data?.playurl != null) {
+                        val chanll = liveInfo.data.chanll
+                        val decodedBytes = Base64.decode(
+                            chanll.substring(9, chanll.length - 3),
+                            Base64.DEFAULT
+                        )
+                        val decodedString = String(decodedBytes)
+                        val regex = Regex("""des_key = "([^"]+).+var des_iv = "([^"]+)""")
+                        val matchResult = regex.find(decodedString)
+                        if (matchResult != null) {
+                            val (key, iv) = matchResult.destructured
+                            val keyBytes = Base64.decode(key, Base64.DEFAULT)
+                            val ivBytes = Base64.decode(iv, Base64.DEFAULT)
+                            val url = liveInfo.data.playurl + "&revoi=" + encryptTripleDES(
+                                keyBytes + byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0),
+                                ivBytes
+                            ).uppercase()
+                            Log.i(TAG, "$title url $url")
+                            tvModel.addVideoUrl(url)
+                            tvModel.allReady()
+                            tvModel.retryTimes = 0
+                            myRunnable = MyRunnable(tvModel)
+                            handler.post(myRunnable)
                         } else {
-                            Log.e(TAG, "$title url error $request")
-                            tvModel.firstSource()
+                            Log.e(TAG, "$title key error")
+                            if (tvModel.retryTimes < tvModel.retryMaxTimes) {
+                                tvModel.retryTimes++
+                                fetchVideo(tvModel, cookie)
+                            }
                         }
                     } else {
-                        Log.e(TAG, "$title status error")
-                        tvModel.firstSource()
+                        if (liveInfo?.data?.errinfo != null && liveInfo.data.errinfo == "应版权方要求，暂停提供直播信号，请点击观看其他精彩节目") {
+                            Log.e(TAG, "$title error ${liveInfo.data.errinfo}")
+                            tvModel.setErrInfo(liveInfo.data.errinfo)
+                        } else {
+                            Log.e(TAG, "$title url error $request $liveInfo")
+                            if (tvModel.retryTimes < tvModel.retryMaxTimes) {
+                                tvModel.retryTimes++
+                                fetchVideo(tvModel, cookie)
+                            }
+                        }
+                    }
+                } else {
+                    Log.e(TAG, "$title status error")
+                    if (tvModel.retryTimes < tvModel.retryMaxTimes) {
+                        tvModel.retryTimes++
+                        fetchVideo(tvModel, cookie)
+                    }
+                }
+            }
+
+            override fun onFailure(call: Call<LiveInfo>, t: Throwable) {
+                Log.e(TAG, "$title request error")
+                if (tvModel.retryTimes < tvModel.retryMaxTimes) {
+                    tvModel.retryTimes++
+                    fetchVideo(tvModel, cookie)
+                }
+            }
+        })
+    }
+
+    fun fetchVideo(tvModel: TVViewModel) {
+        yspTokenService.getInfo()
+            .enqueue(object : Callback<Info> {
+                override fun onResponse(call: Call<Info>, response: Response<Info>) {
+                    if (response.isSuccessful) {
+                        val token = response.body()?.data?.token
+                        Log.i(TAG, "info success $token")
+                        val cookie =
+                            "vplatform=109; yspopenid=vu0-8lgGV2LW9QjDeuBFsX8yMnzs37Q3_HZF6XyVDpGR_I; vusession=$token"
+                        fetchVideo(tvModel, cookie)
+                    } else {
+                        Log.e(TAG, "info status error")
+                        if (tvModel.retryTimes < tvModel.retryMaxTimes) {
+                            tvModel.retryTimes++
+                            fetchVideo(tvModel)
+                        }
                     }
                 }
 
-                override fun onFailure(call: Call<LiveInfo>, t: Throwable) {
-                    Log.e(TAG, "$title request error")
-                    tvModel.firstSource()
+                override fun onFailure(call: Call<Info>, t: Throwable) {
+                    Log.e(TAG, "info request error $t")
+                    if (tvModel.retryTimes < tvModel.retryMaxTimes) {
+                        tvModel.retryTimes++
+                        fetchVideo(tvModel)
+                    }
                 }
             })
     }
 
     fun fetchData(tvModel: TVViewModel) {
-        var cookie = "guid=1; vplatform=109"
-        val channels = arrayOf(
-            "CCTV3 综艺",
-            "CCTV6 电影",
-            "CCTV8 电视剧",
-            "风云剧场",
-            "第一剧场",
-            "怀旧剧场",
-            "世界地理",
-            "风云音乐",
-            "兵器科技",
-            "风云足球",
-            "高尔夫网球",
-            "女性时尚",
-            "央视文化精品",
-            "央视台球",
-            "电视指南",
-            "卫生健康",
-        )
-        if (tvModel.title.value in channels) {
-            yspTokenService.getInfo()
-                .enqueue(object : Callback<Info> {
-                    override fun onResponse(call: Call<Info>, response: Response<Info>) {
-                        if (response.isSuccessful) {
-                            val info = response.body()
-                            token = info?.data?.token
-                            Log.i(TAG, "info success $token")
-                            cookie =
-                                "guid=1; vplatform=109; yspopenid=vu0-8lgGV2LW9QjDeuBFsX8yMnzs37Q3_HZF6XyVDpGR_I; vusession=$token"
-                            fetchVideo(tvModel, cookie)
-                        } else {
-                            Log.e(TAG, "info status error")
-                        }
-                    }
-
-                    override fun onFailure(call: Call<Info>, t: Throwable) {
-                        Log.e(TAG, "info request error $t")
-                    }
-                })
+        if (tvModel.needToken) {
+            fetchVideo(tvModel)
         } else {
+            val cookie = "vplatform=109"
             fetchVideo(tvModel, cookie)
         }
     }
@@ -251,7 +237,6 @@ class Request {
                         //                        Log.d(TAG, "$title kvcollect success")
                     } else {
                         Log.e(TAG, "$title kvcollect status error")
-                        tvModel.firstSource()
                     }
                 }
 
@@ -278,7 +263,7 @@ class Request {
                             }
                             Log.i(
                                 TAG,
-                                "${item.channelName} ,${item.tvLogo},${item.pid},${item.streamId}"
+                                "${item.channelName},${item.pid},${item.streamId}"
                             )
                             var channelType = "央视频道"
                             if (item?.channelType === "weishi") {

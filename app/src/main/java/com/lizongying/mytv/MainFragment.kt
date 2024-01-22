@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import androidx.leanback.app.BrowseSupportFragment
 import androidx.leanback.widget.ArrayObjectAdapter
 import androidx.leanback.widget.HeaderItem
@@ -63,6 +64,13 @@ class MainFragment : BrowseSupportFragment() {
         handler.post(mUpdateProgramRunnable)
 
         tvListViewModel.getTVListViewModel().value?.forEach { tvViewModel ->
+            tvViewModel.errInfo.observe(viewLifecycleOwner) { _ ->
+                if (tvViewModel.errInfo.value != null
+                    && tvViewModel.id.value == itemPosition
+                ) {
+                    Toast.makeText(context, tvViewModel.errInfo.value, Toast.LENGTH_SHORT).show()
+                }
+            }
             tvViewModel.ready.observe(viewLifecycleOwner) { _ ->
 
                 // not first time && channel not change
@@ -78,8 +86,8 @@ class MainFragment : BrowseSupportFragment() {
                 if (tvViewModel.change.value != null) {
                     val title = tvViewModel.title.value
                     Log.i(TAG, "switch $title")
-                    if (tvViewModel.pid.value != null) {
-                        Log.i(TAG, "request $title")
+                    if (tvViewModel.pid.value != "") {
+                        Log.i(TAG, "request $title ${tvViewModel.pid.value}")
                         lifecycleScope.launch(Dispatchers.IO) {
                             tvViewModel.let { request.fetchData(it) }
                         }
@@ -201,18 +209,29 @@ class MainFragment : BrowseSupportFragment() {
         itemPosition = sharedPref?.getInt("position", 0)!!
         if (itemPosition >= tvListViewModel.size()) {
             itemPosition = 0
-            tvListViewModel.setItemPosition(itemPosition)
         }
+        tvListViewModel.setItemPosition(itemPosition)
     }
 
     fun fragmentReady() {
         ready++
         Log.i(TAG, "ready $ready")
-        if (ready == 3) {
+        if (ready == 4) {
+//            request.fetchPage()
             val tvViewModel = tvListViewModel.getTVViewModel(itemPosition)
             tvViewModel?.changed()
 
             (activity as? MainActivity)?.switchMainFragment()
+        }
+    }
+
+    fun play(itemPosition: Int) {
+        view?.post {
+            if (itemPosition < tvListViewModel.size()) {
+                this.itemPosition = itemPosition
+                tvListViewModel.setItemPosition(itemPosition)
+                tvListViewModel.getTVViewModel(itemPosition)?.changed()
+            }
         }
     }
 
@@ -223,9 +242,7 @@ class MainFragment : BrowseSupportFragment() {
                 itemPosition = tvListViewModel.size() - 1
             }
             tvListViewModel.setItemPosition(itemPosition)
-
-            val tvViewModel = tvListViewModel.getTVViewModel(itemPosition)
-            tvViewModel?.changed()
+            tvListViewModel.getTVViewModel(itemPosition)?.changed()
         }
     }
 
@@ -236,9 +253,7 @@ class MainFragment : BrowseSupportFragment() {
                 itemPosition = 0
             }
             tvListViewModel.setItemPosition(itemPosition)
-
-            val tvViewModel = tvListViewModel.getTVViewModel(itemPosition)
-            tvViewModel?.changed()
+            tvListViewModel.getTVViewModel(itemPosition)?.changed()
         }
     }
 
@@ -288,9 +303,7 @@ class MainFragment : BrowseSupportFragment() {
                 if (itemPosition != item.id.value!!) {
                     itemPosition = item.id.value!!
                     tvListViewModel.setItemPosition(itemPosition)
-
-                    val tvViewModel = tvListViewModel.getTVViewModel(itemPosition)
-                    tvViewModel?.changed()
+                    tvListViewModel.getTVViewModel(itemPosition)?.changed()
                 }
                 (activity as? MainActivity)?.switchMainFragment()
             }
@@ -304,6 +317,7 @@ class MainFragment : BrowseSupportFragment() {
         ) {
             if (item is TVViewModel) {
                 tvListViewModel.setItemPositionCurrent(item.id.value!!)
+                (activity as MainActivity).keepRunnable()
             }
         }
     }
